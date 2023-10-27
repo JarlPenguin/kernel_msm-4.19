@@ -24,7 +24,7 @@
 #include <linux/input.h>
 #include <linux/firmware.h>
 #include <linux/platform_device.h>
-#include <linux/wakelock.h>
+#include <linux/pm_wakeup.h>
 #include "synaptics_dsx_i2c.h"
 
 #define FORCE_UPDATE false
@@ -616,7 +616,7 @@ struct synaptics_rmi4_fwu_handle {
 	struct work_struct fwu_work;
 	bool irq_enabled;
 	struct semaphore irq_sema;
-	struct wake_lock flash_wake_lock;
+	struct wakeup_source *flash_wakeup_source;
 };
 
 struct image_header {
@@ -3477,7 +3477,7 @@ static int fwu_start_reflash(void)
 	const struct firmware *fw_entry = NULL;
 	struct synaptics_rmi4_data *rmi4_data = fwu->rmi4_data;
 
-	wake_lock(&fwu->flash_wake_lock);
+	__pm_stay_awake(fwu->flash_wakeup_source);
 	mutex_lock(&rmi4_data->rmi4_exp_init_mutex);
 	pr_notice("%s: Start of reflash process\n", __func__);
 
@@ -3632,7 +3632,7 @@ exit:
 
 	fwu->rmi4_data->ready_state(fwu->rmi4_data, false);
 	mutex_unlock(&rmi4_data->rmi4_exp_init_mutex);
-	wake_unlock(&fwu->flash_wake_lock);
+	__pm_relax(fwu->flash_wakeup_source);
 
 	return retval;
 }
@@ -3803,7 +3803,7 @@ static int fwu_start_recovery(void)
 
 	pr_notice("%s: Start of recovery process\n", __func__);
 
-	wake_lock(&fwu->flash_wake_lock);
+	__pm_stay_awake(fwu->flash_wakeup_source);
 
 	retval = rmi4_data->irq_enable(rmi4_data, false);
 	if (retval < 0) {
@@ -3854,7 +3854,7 @@ exit:
 	fwu->rmi4_data->set_state(fwu->rmi4_data, STATE_UNKNOWN);
 	fwu_reset_device();
 	fwu_irq_enable(false);
-	wake_unlock(&fwu->flash_wake_lock);
+	__pm_relax(fwu->flash_wakeup_source);
 
 	pr_notice("%s: End of recovery process\n", __func__);
 
@@ -4297,7 +4297,7 @@ static ssize_t fwu_sysfs_erase_store(struct device *dev,
 	if (input != 1)
 		return -EINVAL;
 
-	wake_lock(&fwu->flash_wake_lock);
+	__pm_stay_awake(fwu->flash_wakeup_source);
 	mutex_lock(&rmi4_data->rmi4_exp_init_mutex);
 
 	if (!fwu->in_bl_mode) {
@@ -4334,7 +4334,7 @@ reset_and_exit:
 
 	fwu->rmi4_data->ready_state(fwu->rmi4_data, false);
 	mutex_unlock(&rmi4_data->rmi4_exp_init_mutex);
-	wake_unlock(&fwu->flash_wake_lock);
+	__pm_relax(fwu->flash_wakeup_source);
 
 	return count;
 }
@@ -4424,8 +4424,7 @@ static int synaptics_rmi4_fwu_init(struct synaptics_rmi4_data *rmi4_data)
 	fwu->force_update = FORCE_UPDATE;
 	fwu->do_lockdown = DO_LOCKDOWN;
 
-	wake_lock_init(&fwu->flash_wake_lock,
-		WAKE_LOCK_SUSPEND, "synaptics_fw_flash");
+	fwu->flash_wakeup_source = wakeup_source_register(NULL, "synaptics_fw_flash");
 
 	fwu->initialized = true;
 
